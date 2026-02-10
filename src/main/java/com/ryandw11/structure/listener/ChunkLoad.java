@@ -37,7 +37,7 @@ public class ChunkLoad implements Listener {
          */
         try {
             StructurePicker s = new StructurePicker(b, e.getChunk(), CustomStructures.getInstance());
-            s.runTaskTimer(CustomStructures.plugin, 1, 10);
+            s.pick();
         } catch (RuntimeException ex) {
             // ignore, error already logged.
         }

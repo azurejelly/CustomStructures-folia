@@ -13,7 +13,7 @@ public class IgnoreBlocks_1_14 implements IgnoreBlocks{
             // General BLocks
             Material.SNOW,
             // Grasses
-            Material.GRASS,
+            Material.SHORT_GRASS,
             Material.TALL_GRASS,
             Material.FERN,
             Material.LARGE_FERN,

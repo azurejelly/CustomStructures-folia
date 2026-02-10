@@ -68,11 +68,11 @@ public class StructureHandler {
 
         checkStructureList = new CheckStructureList(this);
         // Run every 5 minutes.
-        checkStructureList.runTaskTimerAsynchronously(cs, 20, 6000);
+        checkStructureList.init();
 
         if (cs.getConfig().getBoolean("logStructures")) {
             structureDatabaseHandler = new StructureDatabaseHandler(cs);
-            structureDatabaseHandler.runTaskTimerAsynchronously(cs, 20, 300);
+            structureDatabaseHandler.run();
         }
     }
 

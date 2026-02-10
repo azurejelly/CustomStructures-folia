@@ -168,8 +168,14 @@ public class SchematicHandler {
 
         // Schedule the signs & containers replacement task
         double finalRotY = rotY;
+        long delay = Math.round(structure.getStructureLimitations().getReplacementBlocksDelay() * 20L);
+
+        if (delay <= 0) {
+            delay = 1L;
+        }
+
         // Run a task later. This is done so async plugins have time to paste as needed.
-        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+        plugin.getServer().getRegionScheduler().runDelayed(plugin, loc, (t) -> {
             List<Location> containersAndSignsLocations = new ArrayList<>();
             // If the structure is compiled, then grab the data from the cschem file.
             if (structure.isCompiled()) {
@@ -223,7 +229,7 @@ public class SchematicHandler {
                 Bukkit.getServer().getPluginManager().callEvent(structureSpawnEvent);
             }
 
-        }, Math.round(structure.getStructureLimitations().getReplacementBlocksDelay() * 20));
+        }, delay);
     }
 
     /**

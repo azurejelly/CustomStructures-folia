@@ -151,8 +151,7 @@ public class CustomStructures extends JavaPlugin {
         this.structureSignHandler = new StructureSignHandler();
 
         // Run this after the loading of all plugins.
-        Bukkit.getScheduler().scheduleSyncDelayedTask(this, this::initialize, 30);
-
+        getServer().getGlobalRegionScheduler().runDelayed(this, (t) -> initialize(), 30L);
 
         if (getConfig().getBoolean("bstats")) {
             metrics = new Metrics(this, 7056);

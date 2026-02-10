@@ -6,6 +6,7 @@ description: A plugin which allows you to spawn in custom structures!
 depend: [WorldEdit]
 softdepend: [MythicMobs, Citizens]
 api-version: 1.13
+folia-supported: true
 commands:
     customstructure:
      description: Main command.

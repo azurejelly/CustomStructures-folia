@@ -11,6 +11,7 @@ import com.ryandw11.structure.structure.StructureHandler;
 import com.ryandw11.structure.structure.properties.BlockLevelLimit;
 import com.ryandw11.structure.structure.properties.StructureYSpawning;
 import com.sk89q.worldedit.WorldEditException;
+import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -29,7 +30,7 @@ import java.util.Objects;
  *
  * @author Ryandw11
  */
-public class StructurePicker extends BukkitRunnable {
+public class StructurePicker {
 
     private final CustomStructures plugin;
 
@@ -57,37 +58,156 @@ public class StructurePicker extends BukkitRunnable {
         priorityStructureQueue = new PriorityStructureQueue(structureHandler.getStructures(), Objects.requireNonNull(bl), ch);
     }
 
-    @Override
-    public void run() {
-        Structure gStructure = null;
-        try {
-            if (!priorityStructureQueue.hasNextStructure()) {
-                this.cancel();
-                return;
-            }
+    public void pick() {
+        //runTaskTimer(CustomStructures.plugin, 1, 10);
+        plugin.getServer().getRegionScheduler().runAtFixedRate(plugin, bl.getLocation(), (t) -> {
+            Structure gStructure = null;
+            try {
+                if (!priorityStructureQueue.hasNextStructure()) {
+                    t.cancel();
+                    return;
+                }
 
-            gStructure = priorityStructureQueue.getNextStructure();
-            Structure structure = gStructure;
-            assert structure != null;
-            StructureYSpawning structureSpawnSettings = structure.getStructureLocation().getSpawnSettings();
+                gStructure = priorityStructureQueue.getNextStructure();
+                Structure structure = gStructure;
+                assert structure != null;
+                StructureYSpawning structureSpawnSettings = structure.getStructureLocation().getSpawnSettings();
 
-            // Get the highest block according to the settings for the structure.
-            structureBlock = structureSpawnSettings.getHighestBlock(bl.getLocation());
+                // Get the highest block according to the settings for the structure.
+                structureBlock = structureSpawnSettings.getHighestBlock(bl.getLocation());
 
-            // If the block is the void, then set it to null to maintain compatibility.
-            if (structureBlock.getType() == Material.VOID_AIR) {
-                structureBlock = null;
-            }
+                // If the block is the void, then set it to null to maintain compatibility.
+                if (structureBlock.getType() == Material.VOID_AIR) {
+                    structureBlock = null;
+                }
 
-            // If the block is null, Skip the other steps and spawn.
-            if (structureBlock == null) {
-                structureBlock = ch.getBlock(8, structureSpawnSettings.getHeight(null), 8);
+                // If the block is null, Skip the other steps and spawn.
+                if (structureBlock == null) {
+                    structureBlock = ch.getBlock(8, structureSpawnSettings.getHeight(null), 8);
+
+                    // Now to finally paste the schematic
+                    plugin.getServer().getRegionScheduler().run(plugin, structureBlock.getLocation(), (task) -> {
+                        // It is assumed at this point that the structure has been spawned.
+                        // Add it to the list of spawned structures.
+                        plugin.getStructureHandler().putSpawnedStructure(structureBlock.getLocation(),
+                                structure);
+                        try {
+                            SchematicHandler.placeSchematic(structureBlock.getLocation(),
+                                    structure.getSchematic(),
+                                    structure.getStructureProperties().canPlaceAir(),
+                                    structure);
+                        } catch (IOException | WorldEditException e) {
+                            e.printStackTrace();
+                        }
+                    });
+
+                    // Cancel the process and return.
+                    t.cancel();
+                    return;
+                }
+
+                // Allows the structures to no longer spawn on plant life.
+                if (structure.getStructureProperties().isIgnoringPlants() && ignoreBlocks.getBlocks().contains(structureBlock.getType())) {
+                    for (int i = structureBlock.getY(); i >= 4; i--) {
+                        if (!ignoreBlocks.getBlocks().contains(ch.getBlock(8, i, 8).getType()) && !ch.getBlock(8, i, 8).getType().isAir()) {
+                            structureBlock = ch.getBlock(8, i, 8);
+                            break;
+                        }
+                    }
+                }
+
+                // calculate SpawnY if first is true
+                if (structureSpawnSettings.isCalculateSpawnYFirst()) {
+                    structureBlock = ch.getBlock(8, structureSpawnSettings.getHeight(structureBlock.getLocation()), 8);
+                }
+
+                if (!structure.getStructureLimitations().hasWhitelistBlock(structureBlock))
+                    return;
+
+                if (structure.getStructureLimitations().hasBlacklistBlock(structureBlock))
+                    return;
+
+                // If it can spawn in water
+                if (!structure.getStructureProperties().canSpawnInWater()) {
+                    if (structureBlock.getType() == Material.WATER) return;
+                }
+
+                // If the structure can spawn in lava
+                if (!structure.getStructureProperties().canSpawnInLavaLakes()) {
+                    if (structureBlock.getType() == Material.LAVA) return;
+                }
+
+                // calculate SpawnY if first is false
+                if (!structureSpawnSettings.isCalculateSpawnYFirst()) {
+                    structureBlock = ch.getBlock(8, structureSpawnSettings.getHeight(structureBlock.getLocation()), 8);
+                }
+
+                // If the structure is going to be cut off by the world height limit, pick a new structure.
+                if (structure.getStructureLimitations().getWorldHeightRestriction() != -1 &&
+                        structureBlock.getLocation().getY() > ch.getWorld().getMaxHeight() - structure.getStructureLimitations().getWorldHeightRestriction())
+                    return;
+
+                // If the structure can follows block level limit.
+                // This only triggers if it spawns on the top.
+                if (structure.getStructureLimitations().getBlockLevelLimit().isEnabled()) {
+                    BlockLevelLimit limit = structure.getStructureLimitations().getBlockLevelLimit();
+                    if (limit.getMode().equalsIgnoreCase("flat")) {
+                        for (int x = limit.getX1() + structureBlock.getX(); x <= limit.getX2() + structureBlock.getX(); x++) {
+                            for (int z = limit.getZ1() + structureBlock.getZ(); z <= limit.getZ2() + structureBlock.getZ(); z++) {
+                                Block top = ch.getWorld().getBlockAt(x, structureBlock.getY() + 1, z);
+                                Block bottom = ch.getWorld().getBlockAt(x, structureBlock.getY() - 1, z);
+                                if (!(top.getType().isAir() || ignoreBlocks.getBlocks().contains(top.getType())))
+                                    return;
+                                if (bottom.getType().isAir())
+                                    return;
+                            }
+                        }
+                    } else if (limit.getMode().equalsIgnoreCase("flat_error")) {
+                        int total = 0;
+                        int error = 0;
+                        for (int x = limit.getX1() + structureBlock.getX(); x <= limit.getX2() + structureBlock.getX(); x++) {
+                            for (int z = limit.getZ1() + structureBlock.getZ(); z <= limit.getZ2() + structureBlock.getZ(); z++) {
+                                Block top = ch.getWorld().getBlockAt(x, structureBlock.getY() + 1, z);
+                                Block bottom = ch.getWorld().getBlockAt(x, structureBlock.getY() - 1, z);
+                                if (!(top.getType().isAir() || ignoreBlocks.getBlocks().contains(top.getType())))
+                                    error++;
+                                if (bottom.getType().isAir())
+                                    error++;
+
+                                total += 2;
+                            }
+                        }
+
+                        if (((double) error / total) > limit.getError())
+                            return;
+                    }
+                }
+
+                for (StructureSection section : structure.getStructureSections()) {
+                    // Check if the structure can spawn according to the section.
+                    // If an error occurs, report it to the user.
+                    try {
+                        if (!section.checkStructureConditions(structure, structureBlock, ch)) return;
+                    } catch (Exception ex) {
+                        plugin.getLogger().severe(String.format("[CS Addon] An error has occurred when attempting to spawn " +
+                                "the structure %s with the custom property %s!", structure.getName(), section.getName()));
+                        plugin.getLogger().severe("This is not a CustomStructures error! Please report " +
+                                "this to the developer of the addon.");
+                        if (plugin.isDebug()) {
+                            ex.printStackTrace();
+                        } else {
+                            plugin.getLogger().severe("Enable debug mode to see the stack trace.");
+                        }
+                        return;
+                    }
+                }
+
                 // Now to finally paste the schematic
-                plugin.getServer().getScheduler().scheduleSyncDelayedTask(plugin, () -> {
+                plugin.getServer().getRegionScheduler().run(plugin, structureBlock.getLocation(), (task) -> {
+                    plugin.getStructureHandler().putSpawnedStructure(structureBlock.getLocation(), structure);
+
                     // It is assumed at this point that the structure has been spawned.
                     // Add it to the list of spawned structures.
-                    plugin.getStructureHandler().putSpawnedStructure(structureBlock.getLocation(),
-                            structure);
                     try {
                         SchematicHandler.placeSchematic(structureBlock.getLocation(),
                                 structure.getSchematic(),
@@ -98,145 +218,28 @@ public class StructurePicker extends BukkitRunnable {
                     }
                 });
 
-                // Cancel the process and return.
-                this.cancel();
-                return;
-            }
+                t.cancel();// return after pasting
+            } catch (StructureConfigurationException ex) {
 
-            // Allows the structures to no longer spawn on plant life.
-            if (structure.getStructureProperties().isIgnoringPlants() && ignoreBlocks.getBlocks().contains(structureBlock.getType())) {
-                for (int i = structureBlock.getY(); i >= 4; i--) {
-                    if (!ignoreBlocks.getBlocks().contains(ch.getBlock(8, i, 8).getType()) && !ch.getBlock(8, i, 8).getType().isAir()) {
-                        structureBlock = ch.getBlock(8, i, 8);
-                        break;
-                    }
+                t.cancel();
+                if (gStructure != null) {
+                    plugin.getLogger().severe("A configuration error was encountered when attempting to spawn the structure: "
+                            + gStructure.getName());
+                } else {
+                    plugin.getLogger().severe("A configuration error was encountered when attempting to spawn a structure.");
                 }
+                plugin.getLogger().severe(ex.getMessage());
+
+            } catch (Exception ex) {
+
+                t.cancel();
+                plugin.getLogger().severe("An error was encountered during the schematic pasting section.");
+                plugin.getLogger().severe("The task was stopped for the safety of your server!");
+                plugin.getLogger().severe("For more information enable debug mode.");
+                if (plugin.isDebug())
+                    ex.printStackTrace();
+
             }
-
-            // calculate SpawnY if first is true
-            if (structureSpawnSettings.isCalculateSpawnYFirst()) {
-                structureBlock = ch.getBlock(8, structureSpawnSettings.getHeight(structureBlock.getLocation()), 8);
-            }
-
-            if (!structure.getStructureLimitations().hasWhitelistBlock(structureBlock))
-                return;
-
-            if (structure.getStructureLimitations().hasBlacklistBlock(structureBlock))
-                return;
-
-            // If it can spawn in water
-            if (!structure.getStructureProperties().canSpawnInWater()) {
-                if (structureBlock.getType() == Material.WATER) return;
-            }
-
-            // If the structure can spawn in lava
-            if (!structure.getStructureProperties().canSpawnInLavaLakes()) {
-                if (structureBlock.getType() == Material.LAVA) return;
-            }
-
-            // calculate SpawnY if first is false
-            if (!structureSpawnSettings.isCalculateSpawnYFirst()) {
-                structureBlock = ch.getBlock(8, structureSpawnSettings.getHeight(structureBlock.getLocation()), 8);
-            }
-
-            // If the structure is going to be cut off by the world height limit, pick a new structure.
-            if (structure.getStructureLimitations().getWorldHeightRestriction() != -1 &&
-                    structureBlock.getLocation().getY() > ch.getWorld().getMaxHeight() - structure.getStructureLimitations().getWorldHeightRestriction())
-                return;
-
-            // If the structure can follows block level limit.
-            // This only triggers if it spawns on the top.
-            if (structure.getStructureLimitations().getBlockLevelLimit().isEnabled()) {
-                BlockLevelLimit limit = structure.getStructureLimitations().getBlockLevelLimit();
-                if (limit.getMode().equalsIgnoreCase("flat")) {
-                    for (int x = limit.getX1() + structureBlock.getX(); x <= limit.getX2() + structureBlock.getX(); x++) {
-                        for (int z = limit.getZ1() + structureBlock.getZ(); z <= limit.getZ2() + structureBlock.getZ(); z++) {
-                            Block top = ch.getWorld().getBlockAt(x, structureBlock.getY() + 1, z);
-                            Block bottom = ch.getWorld().getBlockAt(x, structureBlock.getY() - 1, z);
-                            if (!(top.getType().isAir() || ignoreBlocks.getBlocks().contains(top.getType())))
-                                return;
-                            if (bottom.getType().isAir())
-                                return;
-                        }
-                    }
-                } else if (limit.getMode().equalsIgnoreCase("flat_error")) {
-                    int total = 0;
-                    int error = 0;
-                    for (int x = limit.getX1() + structureBlock.getX(); x <= limit.getX2() + structureBlock.getX(); x++) {
-                        for (int z = limit.getZ1() + structureBlock.getZ(); z <= limit.getZ2() + structureBlock.getZ(); z++) {
-                            Block top = ch.getWorld().getBlockAt(x, structureBlock.getY() + 1, z);
-                            Block bottom = ch.getWorld().getBlockAt(x, structureBlock.getY() - 1, z);
-                            if (!(top.getType().isAir() || ignoreBlocks.getBlocks().contains(top.getType())))
-                                error++;
-                            if (bottom.getType().isAir())
-                                error++;
-
-                            total += 2;
-                        }
-                    }
-
-                    if (((double) error / total) > limit.getError())
-                        return;
-                }
-            }
-
-            for (StructureSection section : structure.getStructureSections()) {
-                // Check if the structure can spawn according to the section.
-                // If an error occurs, report it to the user.
-                try {
-                    if (!section.checkStructureConditions(structure, structureBlock, ch)) return;
-                } catch (Exception ex) {
-                    plugin.getLogger().severe(String.format("[CS Addon] An error has occurred when attempting to spawn " +
-                            "the structure %s with the custom property %s!", structure.getName(), section.getName()));
-                    plugin.getLogger().severe("This is not a CustomStructures error! Please report " +
-                            "this to the developer of the addon.");
-                    if (plugin.isDebug()) {
-                        ex.printStackTrace();
-                    } else {
-                        plugin.getLogger().severe("Enable debug mode to see the stack trace.");
-                    }
-                    return;
-                }
-            }
-
-            // Now to finally paste the schematic
-            plugin.getServer().getScheduler().scheduleSyncDelayedTask(plugin, () -> {
-                // It is assumed at this point that the structure has been spawned.
-                // Add it to the list of spawned structures.
-                plugin.getStructureHandler().putSpawnedStructure(structureBlock.getLocation(),
-                        structure);
-                try {
-                    SchematicHandler.placeSchematic(structureBlock.getLocation(),
-                            structure.getSchematic(),
-                            structure.getStructureProperties().canPlaceAir(),
-                            structure);
-                } catch (IOException | WorldEditException e) {
-                    e.printStackTrace();
-                }
-            });
-
-            this.cancel();// return after pasting
-        } catch (StructureConfigurationException ex) {
-
-            this.cancel();
-            if (gStructure != null) {
-                plugin.getLogger().severe("A configuration error was encountered when attempting to spawn the structure: "
-                        + gStructure.getName());
-            } else {
-                plugin.getLogger().severe("A configuration error was encountered when attempting to spawn a structure.");
-            }
-            plugin.getLogger().severe(ex.getMessage());
-
-        } catch (Exception ex) {
-
-            this.cancel();
-            plugin.getLogger().severe("An error was encountered during the schematic pasting section.");
-            plugin.getLogger().severe("The task was stopped for the safety of your server!");
-            plugin.getLogger().severe("For more information enable debug mode.");
-            if (plugin.isDebug())
-                ex.printStackTrace();
-
-        }
+        }, 1L, 10L);
     }
-
 }

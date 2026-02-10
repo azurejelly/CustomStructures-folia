@@ -14,7 +14,6 @@ import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
-import org.bukkit.scheduler.BukkitRunnable;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -24,10 +23,7 @@ import java.util.LinkedList;
 import java.util.Optional;
 import java.util.Queue;
 
-/**
- * The default implementation for the bottom fill feature.
- */
-public class DefaultBottomFill extends BukkitRunnable implements BottomFillImpl {
+public class ModernBottomFill implements BottomFillImpl {
 
     private Structure structure;
     private Location spawnLocation;
@@ -37,7 +33,6 @@ public class DefaultBottomFill extends BukkitRunnable implements BottomFillImpl 
 
     @Override
     public void performFill(Structure structure, Location spawnLocation, Location minLoc, Location maxLoc, AffineTransform transform) {
-
         Optional<Material> fillMaterial = structure.getBottomSpaceFill().getFillMaterial(spawnLocation.getBlock().getBiome());
         if (fillMaterial.isPresent()) {
             this.fillMaterial = fillMaterial.get();
@@ -48,8 +43,7 @@ public class DefaultBottomFill extends BukkitRunnable implements BottomFillImpl 
         this.groundPlane = new LinkedList<>();
         this.minY = minLoc.getBlockY();
 
-        Bukkit.getScheduler().runTaskAsynchronously(CustomStructures.getInstance(), () -> {
-
+        Bukkit.getAsyncScheduler().runNow(CustomStructures.getInstance(), (t) -> {
             // ---- This part of code should be safe to run async ----
 
             // To get the ground plane, we need to read the schematic
@@ -98,44 +92,39 @@ public class DefaultBottomFill extends BukkitRunnable implements BottomFillImpl 
             }
 
             // ---- Then do the block placement on the main thread ----
+            Bukkit.getRegionScheduler().run(CustomStructures.getInstance(), spawnLocation, (task) -> {
+                World world = spawnLocation.getWorld();
+                if (world == null) {
+                    CustomStructures.getInstance().getLogger().warning("The world in which the structure " + structure.getName() + " spawns is not loaded");
+                    CustomStructures.getInstance().getLogger().warning("Bottom fill will not be applied to structure " + structure.getName());
+                    task.cancel();
+                    return;
+                }
 
-            Bukkit.getScheduler().runTask(CustomStructures.getInstance(), () -> runTaskTimer(CustomStructures.getInstance(), 0, 2));
+                for (int i = 0; i < 8; i++) { // Select 8 ground points in a single tick
+                    BlockVector2 groundPoint = groundPlane.poll();
+                    if (groundPoint == null) {
+                        task.cancel();
+                        return;
+                    }
+
+                    int y = minY - 1;
+                    int x = groundPoint.getBlockX();
+                    int z = groundPoint.getBlockZ();
+                    for (int j = 0; j < 64; j++) { // Fill the bottom space of the selected ground points down to 64 blocks
+                        boolean shouldFill =
+                                // If the block is empty
+                                world.getBlockAt(x, y, z).isEmpty() ||
+                                        // Or if the block is in the list of ignore blocks.
+                                        CustomStructures.getInstance().getBlockIgnoreManager().getBlocks().contains(world.getBlockAt(x, y, z).getType()) ||
+                                        // Or if it is water (if it is set to be ignored)
+                                        (structure.getStructureProperties().shouldIgnoreWater() && world.getBlockAt(x, y, z).getType() == Material.WATER);
+                        if (shouldFill) {
+                            world.getBlockAt(x, y--, z).setType(this.fillMaterial);
+                        } else break;
+                    }
+                }
+            });
         });
     }
-
-    @Override
-    public void run() {
-        World world = spawnLocation.getWorld();
-        if (world == null) {
-            CustomStructures.getInstance().getLogger().warning("The world in which the structure " + structure.getName() + " spawns is not loaded");
-            CustomStructures.getInstance().getLogger().warning("Bottom fill will not be applied to structure " + structure.getName());
-            cancel();
-            return;
-        }
-
-        for (int i = 0; i < 8; i++) { // Select 8 ground points in a single tick
-            BlockVector2 groundPoint = groundPlane.poll();
-            if (groundPoint == null) {
-                cancel();
-                return;
-            }
-
-            int y = minY - 1;
-            int x = groundPoint.getBlockX();
-            int z = groundPoint.getBlockZ();
-            for (int j = 0; j < 64; j++) { // Fill the bottom space of the selected ground points down to 64 blocks
-                boolean shouldFill =
-                        // If the block is empty
-                        world.getBlockAt(x, y, z).isEmpty() ||
-                                // Or if the block is in the list of ignore blocks.
-                                CustomStructures.getInstance().getBlockIgnoreManager().getBlocks().contains(world.getBlockAt(x, y, z).getType()) ||
-                                // Or if it is water (if it is set to be ignored)
-                                (structure.getStructureProperties().shouldIgnoreWater() && world.getBlockAt(x, y, z).getType() == Material.WATER);
-                if (shouldFill) {
-                    world.getBlockAt(x, y--, z).setType(fillMaterial);
-                } else break;
-            }
-        }
-    }
-
 }

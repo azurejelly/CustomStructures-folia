@@ -8,6 +8,7 @@ import com.ryandw11.structure.io.sql.DistanceFunction;
 import com.ryandw11.structure.structure.Structure;
 import com.ryandw11.structure.structure.StructureHandler;
 import com.ryandw11.structure.utils.Pair;
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.scheduler.BukkitRunnable;
@@ -22,6 +23,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Handles the saving and reading of structures from the spawned structure database.
@@ -34,15 +36,15 @@ import java.util.concurrent.CopyOnWriteArrayList;
  *
  * <p>Note: This feature needs to be enabled by the user in the config.</p>
  */
-public class StructureDatabaseHandler extends BukkitRunnable {
+public class StructureDatabaseHandler {
     private final Map<Location, Structure> structuresToSave = new ConcurrentHashMap<>();
     private final List<Pair<Location, CompletableFuture<Structure>>> structuresToGet = new CopyOnWriteArrayList<>();
     private final List<Pair<Structure, CompletableFuture<List<Location>>>> locationsToGet = new CopyOnWriteArrayList<>();
     private final List<Pair<NearbyStructuresRequest, CompletableFuture<NearbyStructuresResponse>>> findNearby = new CopyOnWriteArrayList<>();
 
     private final Connection connection;
-
     private final CustomStructures plugin;
+    private ScheduledTask task;
 
     /**
      * Construct the StructureDatabaseHandler.
@@ -144,15 +146,17 @@ public class StructureDatabaseHandler extends BukkitRunnable {
      * @return A completable future containing the NearbyStructuresResponse.
      */
     public CompletableFuture<NearbyStructuresResponse> findNearby(NearbyStructuresRequest request) {
-        CompletableFuture<NearbyStructuresResponse> completableFuture = new CompletableFuture<>();
+        CompletableFuture<NearbyStructuresResponse> future = new CompletableFuture<>();
         if (findNearby.size() <= 5)
-            findNearby.add(Pair.of(request, completableFuture));
+            findNearby.add(Pair.of(request, future));
         else
-            Bukkit.getScheduler().runTaskLater(plugin,
-                    () -> completableFuture.completeExceptionally(new RateLimitException("The maximum amount of requests has been hit.")),
-                    5);
+            Bukkit.getGlobalRegionScheduler().runDelayed(plugin,
+                    (t) -> future.completeExceptionally(
+                            new RateLimitException("The maximum amount of requests has been hit.")
+                    ), 5
+            );
 
-        return completableFuture;
+        return future;
     }
 
     /**
@@ -168,145 +172,151 @@ public class StructureDatabaseHandler extends BukkitRunnable {
         return completableFuture;
     }
 
-    @Override
     public void run() {
-        // Handle save requests.
-        for (Map.Entry<Location, Structure> entry : structuresToSave.entrySet()) {
-            String worldName = Objects.requireNonNull(entry.getKey().getWorld()).getName();
-            try {
-                PreparedStatement statement = connection.prepareStatement("INSERT INTO Structures (name, x, y, z, world) VALUES (?, ?, ?, ?, ?)");
-                statement.setString(1, entry.getValue().getName());
-                statement.setDouble(2, entry.getKey().getBlockX());
-                statement.setDouble(3, entry.getKey().getBlockY());
-                statement.setDouble(4, entry.getKey().getBlockZ());
-                statement.setString(5, worldName);
+        // .runTaskTimerAsynchronously(cs, 20, 300);
+        task = Bukkit.getAsyncScheduler().runAtFixedRate(plugin, (task) -> {
+            // Handle save requests.
+            for (Map.Entry<Location, Structure> entry : structuresToSave.entrySet()) {
+                String worldName = Objects.requireNonNull(entry.getKey().getWorld()).getName();
+                try {
+                    PreparedStatement statement = connection.prepareStatement("INSERT INTO Structures (name, x, y, z, world) VALUES (?, ?, ?, ?, ?)");
+                    statement.setString(1, entry.getValue().getName());
+                    statement.setDouble(2, entry.getKey().getBlockX());
+                    statement.setDouble(3, entry.getKey().getBlockY());
+                    statement.setDouble(4, entry.getKey().getBlockZ());
+                    statement.setString(5, worldName);
 
-                statement.executeUpdate();
-                statement.close();
-            } catch (SQLException exception) {
-                if (plugin.isDebug()) {
-                    plugin.getLogger().warning("An error was encountered when attempting to save a structure to the structure database!");
-                    exception.printStackTrace();
-                }
-            }
-        }
-        structuresToSave.clear();
-
-        // Handle structures at a specific location requests.
-        for (Pair<Location, CompletableFuture<Structure>> pair : structuresToGet) {
-            try {
-                PreparedStatement statement = connection.prepareStatement("SELECT name FROM Structures WHERE x = ? AND y = ? AND z = ? AND world = ?");
-                statement.setDouble(1, pair.getLeft().getBlockX());
-                statement.setDouble(2, pair.getLeft().getBlockY());
-                statement.setDouble(3, pair.getLeft().getBlockZ());
-                statement.setString(4, Objects.requireNonNull(pair.getLeft().getWorld()).getName());
-
-                ResultSet resultSet = statement.executeQuery();
-
-                if (resultSet.next()) {
-                    Structure structure = plugin.getStructureHandler().getStructure(resultSet.getString("name"));
-                    if (structure != null) {
-                        pair.getRight().complete(structure);
-                    } else {
-                        pair.getRight().completeExceptionally(new StructureNotFoundException("Retrieved structure is not loaded!"));
+                    statement.executeUpdate();
+                    statement.close();
+                } catch (SQLException exception) {
+                    if (plugin.isDebug()) {
+                        plugin.getLogger().warning("An error was encountered when attempting to save a structure to the structure database!");
+                        exception.printStackTrace();
                     }
-                } else {
-                    pair.getRight().completeExceptionally(new StructureNotFoundException("Cannot find structure with the provided location."));
-                }
-            } catch (SQLException exception) {
-                pair.getRight().completeExceptionally(new StructureDatabaseException("An error was encountered when attempting to retrieve a structure from the structure database!"));
-                if (plugin.isDebug()) {
-                    plugin.getLogger().warning("An error was encountered when attempting to retrieve a structure from the structure database!");
-                    exception.printStackTrace();
                 }
             }
-        }
-        structuresToGet.clear();
+            structuresToSave.clear();
 
-        // Handle locations of a specific structure requests.
-        for (Pair<Structure, CompletableFuture<List<Location>>> pair : locationsToGet) {
-            List<Location> result = new ArrayList<>();
-            try {
-                PreparedStatement statement = connection.prepareStatement("SELECT * FROM Structures WHERE name = ?");
-                statement.setString(1, pair.getLeft().getName());
+            // Handle structures at a specific location requests.
+            for (Pair<Location, CompletableFuture<Structure>> pair : structuresToGet) {
+                try {
+                    PreparedStatement statement = connection.prepareStatement("SELECT name FROM Structures WHERE x = ? AND y = ? AND z = ? AND world = ?");
+                    statement.setDouble(1, pair.getLeft().getBlockX());
+                    statement.setDouble(2, pair.getLeft().getBlockY());
+                    statement.setDouble(3, pair.getLeft().getBlockZ());
+                    statement.setString(4, Objects.requireNonNull(pair.getLeft().getWorld()).getName());
 
-                ResultSet resultSet = statement.executeQuery();
+                    ResultSet resultSet = statement.executeQuery();
 
-                while (resultSet.next()) {
-                    result.add(new Location(
-                            Bukkit.getWorld(resultSet.getString("world")),
-                            resultSet.getDouble("x"),
-                            resultSet.getDouble("y"),
-                            resultSet.getDouble("z")
-                    ));
-                }
-
-                pair.getRight().complete(result);
-            } catch (SQLException exception) {
-                pair.getRight().completeExceptionally(new StructureDatabaseException("An error was encountered when attempting to retrieve structures from the structure database!"));
-                if (plugin.isDebug()) {
-                    plugin.getLogger().warning("An error was encountered when attempting to retrieve structures from the structure database!");
-                    exception.printStackTrace();
-                }
-            }
-        }
-        locationsToGet.clear();
-
-        // Handle nearby requests.
-        for (Pair<NearbyStructuresRequest, CompletableFuture<NearbyStructuresResponse>> pair : findNearby) {
-            try {
-                List<NearbyStructuresResponse.NearbyStructureContainer> result = new ArrayList<>();
-                // So this does not clog up the IO Operations.
-                NearbyStructuresRequest nearbyStructuresRequest = pair.getLeft();
-                PreparedStatement statement = null;
-
-                if (nearbyStructuresRequest.hasName()) {
-                    statement = connection.prepareStatement("SELECT *, DIST(?, ?, ?, x, y, z) AS dist FROM Structures WHERE name = ? AND world = ? ORDER BY dist ASC LIMIT ?");
-                    statement.setInt(1, nearbyStructuresRequest.getLocation().getBlockX());
-                    statement.setInt(2, nearbyStructuresRequest.getLocation().getBlockY());
-                    statement.setInt(3, nearbyStructuresRequest.getLocation().getBlockZ());
-                    statement.setString(4, nearbyStructuresRequest.getName());
-                    statement.setString(5, Objects.requireNonNull(nearbyStructuresRequest.getLocation().getWorld()).getName());
-                    statement.setInt(6, nearbyStructuresRequest.getLimit());
-                } else {
-                    statement = connection.prepareStatement("SELECT *, DIST(?, ?, ?, x, y, z) AS dist FROM Structures WHERE world = ? ORDER BY dist ASC LIMIT ?");
-                    statement.setInt(1, nearbyStructuresRequest.getLocation().getBlockX());
-                    statement.setInt(2, nearbyStructuresRequest.getLocation().getBlockY());
-                    statement.setInt(3, nearbyStructuresRequest.getLocation().getBlockZ());
-                    statement.setString(4, Objects.requireNonNull(nearbyStructuresRequest.getLocation().getWorld()).getName());
-                    statement.setInt(5, nearbyStructuresRequest.getLimit());
-                }
-                ResultSet resultSet = statement.executeQuery();
-
-                while (resultSet.next()) {
-                    result.add(new NearbyStructuresResponse.NearbyStructureContainer(
-                            new Location(
-                                    Bukkit.getWorld(resultSet.getString("world")),
-                                    resultSet.getDouble("x"),
-                                    resultSet.getDouble("y"),
-                                    resultSet.getDouble("z")
-                            ),
-                            plugin.getStructureHandler().getStructure(resultSet.getString("name")),
-                            resultSet.getDouble("dist")
-                    ));
-                }
-
-                pair.getRight().complete(new NearbyStructuresResponse(result));
-            } catch (SQLException ex) {
-                pair.getRight().completeExceptionally(new StructureDatabaseException("An error was encountered when attempting to retrieve structures from the structure database!"));
-                if (plugin.isDebug()) {
-                    plugin.getLogger().warning("An error was encountered when attempting to retrieve structures from the structure database! (Nearby)");
-                    ex.printStackTrace();
+                    if (resultSet.next()) {
+                        Structure structure = plugin.getStructureHandler().getStructure(resultSet.getString("name"));
+                        if (structure != null) {
+                            pair.getRight().complete(structure);
+                        } else {
+                            pair.getRight().completeExceptionally(new StructureNotFoundException("Retrieved structure is not loaded!"));
+                        }
+                    } else {
+                        pair.getRight().completeExceptionally(new StructureNotFoundException("Cannot find structure with the provided location."));
+                    }
+                } catch (SQLException exception) {
+                    pair.getRight().completeExceptionally(new StructureDatabaseException("An error was encountered when attempting to retrieve a structure from the structure database!"));
+                    if (plugin.isDebug()) {
+                        plugin.getLogger().warning("An error was encountered when attempting to retrieve a structure from the structure database!");
+                        exception.printStackTrace();
+                    }
                 }
             }
-        }
-        findNearby.clear();
+            structuresToGet.clear();
+
+            // Handle locations of a specific structure requests.
+            for (Pair<Structure, CompletableFuture<List<Location>>> pair : locationsToGet) {
+                List<Location> result = new ArrayList<>();
+                try {
+                    PreparedStatement statement = connection.prepareStatement("SELECT * FROM Structures WHERE name = ?");
+                    statement.setString(1, pair.getLeft().getName());
+
+                    ResultSet resultSet = statement.executeQuery();
+
+                    while (resultSet.next()) {
+                        result.add(new Location(
+                                Bukkit.getWorld(resultSet.getString("world")),
+                                resultSet.getDouble("x"),
+                                resultSet.getDouble("y"),
+                                resultSet.getDouble("z")
+                        ));
+                    }
+
+                    pair.getRight().complete(result);
+                } catch (SQLException exception) {
+                    pair.getRight().completeExceptionally(new StructureDatabaseException("An error was encountered when attempting to retrieve structures from the structure database!"));
+                    if (plugin.isDebug()) {
+                        plugin.getLogger().warning("An error was encountered when attempting to retrieve structures from the structure database!");
+                        exception.printStackTrace();
+                    }
+                }
+            }
+            locationsToGet.clear();
+
+            // Handle nearby requests.
+            for (Pair<NearbyStructuresRequest, CompletableFuture<NearbyStructuresResponse>> pair : findNearby) {
+                try {
+                    List<NearbyStructuresResponse.NearbyStructureContainer> result = new ArrayList<>();
+                    // So this does not clog up the IO Operations.
+                    NearbyStructuresRequest nearbyStructuresRequest = pair.getLeft();
+                    PreparedStatement statement = null;
+
+                    if (nearbyStructuresRequest.hasName()) {
+                        statement = connection.prepareStatement("SELECT *, DIST(?, ?, ?, x, y, z) AS dist FROM Structures WHERE name = ? AND world = ? ORDER BY dist ASC LIMIT ?");
+                        statement.setInt(1, nearbyStructuresRequest.getLocation().getBlockX());
+                        statement.setInt(2, nearbyStructuresRequest.getLocation().getBlockY());
+                        statement.setInt(3, nearbyStructuresRequest.getLocation().getBlockZ());
+                        statement.setString(4, nearbyStructuresRequest.getName());
+                        statement.setString(5, Objects.requireNonNull(nearbyStructuresRequest.getLocation().getWorld()).getName());
+                        statement.setInt(6, nearbyStructuresRequest.getLimit());
+                    } else {
+                        statement = connection.prepareStatement("SELECT *, DIST(?, ?, ?, x, y, z) AS dist FROM Structures WHERE world = ? ORDER BY dist ASC LIMIT ?");
+                        statement.setInt(1, nearbyStructuresRequest.getLocation().getBlockX());
+                        statement.setInt(2, nearbyStructuresRequest.getLocation().getBlockY());
+                        statement.setInt(3, nearbyStructuresRequest.getLocation().getBlockZ());
+                        statement.setString(4, Objects.requireNonNull(nearbyStructuresRequest.getLocation().getWorld()).getName());
+                        statement.setInt(5, nearbyStructuresRequest.getLimit());
+                    }
+                    ResultSet resultSet = statement.executeQuery();
+
+                    while (resultSet.next()) {
+                        result.add(new NearbyStructuresResponse.NearbyStructureContainer(
+                                new Location(
+                                        Bukkit.getWorld(resultSet.getString("world")),
+                                        resultSet.getDouble("x"),
+                                        resultSet.getDouble("y"),
+                                        resultSet.getDouble("z")
+                                ),
+                                plugin.getStructureHandler().getStructure(resultSet.getString("name")),
+                                resultSet.getDouble("dist")
+                        ));
+                    }
+
+                    pair.getRight().complete(new NearbyStructuresResponse(result));
+                } catch (SQLException ex) {
+                    pair.getRight().completeExceptionally(new StructureDatabaseException("An error was encountered when attempting to retrieve structures from the structure database!"));
+                    if (plugin.isDebug()) {
+                        plugin.getLogger().warning("An error was encountered when attempting to retrieve structures from the structure database! (Nearby)");
+                        ex.printStackTrace();
+                    }
+                }
+            }
+            findNearby.clear();
+        }, 1, 15, TimeUnit.SECONDS);
     }
 
-    @Override
     public synchronized void cancel() throws IllegalStateException {
         run();
-        super.cancel();
+
+        if (task != null) {
+            task.cancel();
+            task = null;
+        }
+
         try {
             connection.close();
         } catch (SQLException ex) {

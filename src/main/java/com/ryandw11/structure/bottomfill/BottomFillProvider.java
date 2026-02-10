@@ -39,7 +39,7 @@ public final class BottomFillProvider {
         if (!providers.isEmpty())
             return providers.get(0);
 
-        return new DefaultBottomFill();
+        return new ModernBottomFill();
     }
 
     /**
@@ -53,6 +53,6 @@ public final class BottomFillProvider {
             return providers.get(impl);
         }
 
-        return new DefaultBottomFill();
+        return new ModernBottomFill();
     }
 }
