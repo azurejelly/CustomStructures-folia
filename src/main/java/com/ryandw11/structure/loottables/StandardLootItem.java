@@ -13,7 +13,7 @@ import org.bukkit.inventory.meta.ItemMeta;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
+
 import java.util.stream.Collectors;
 
 /**
@@ -46,15 +46,18 @@ public class StandardLootItem implements LootItem {
         this.amount = amount + "";
         this.item.setAmount(amount);
 
-        if (customName != null) { //Catch for people who do not want different names
-            ItemMeta meta = Objects.requireNonNull(this.item.getItemMeta());
-            meta.setDisplayName(ChatColor.translateAlternateColorCodes('&', customName));
-            this.item.setItemMeta(meta);
-        }
+        ItemMeta meta = this.item.getItemMeta();
+        if (meta != null) {
+            if (customName != null) { //Catch for people who do not want different names
+                meta.setDisplayName(ChatColor.translateAlternateColorCodes('&', customName));
+            }
 
-        if (!lore.isEmpty()) {
-            lore = lore.stream().map(s -> ChatColor.translateAlternateColorCodes('&', s)).collect(Collectors.toList());
-            Objects.requireNonNull(this.item.getItemMeta()).setLore(lore);
+            if (!lore.isEmpty()) {
+                lore = lore.stream().map(s -> ChatColor.translateAlternateColorCodes('&', s)).collect(Collectors.toList());
+                meta.setLore(lore);
+            }
+
+            this.item.setItemMeta(meta);
         }
 
         this.enchants = enchants;
@@ -79,18 +82,19 @@ public class StandardLootItem implements LootItem {
         }
         this.amount = amount;
         this.item.setAmount(NumberStylizer.getStylizedInt(amount));
-        ItemMeta meta = Objects.requireNonNull(this.item.getItemMeta());
-        if (customName != null) { //Catch for people who do not want different names
-            meta.setDisplayName(ChatColor.translateAlternateColorCodes('&', customName));
+        ItemMeta meta = this.item.getItemMeta();
+        if (meta != null) {
+            if (customName != null) { //Catch for people who do not want different names
+                meta.setDisplayName(ChatColor.translateAlternateColorCodes('&', customName));
+            }
 
+            if (!lore.isEmpty()) {
+                lore = lore.stream().map(s -> ChatColor.translateAlternateColorCodes('&', s)).collect(Collectors.toList());
+                meta.setLore(lore);
+            }
+
+            this.item.setItemMeta(meta);
         }
-
-        if (!lore.isEmpty()) {
-            lore = lore.stream().map(s -> ChatColor.translateAlternateColorCodes('&', s)).collect(Collectors.toList());
-            meta.setLore(lore);
-        }
-
-        this.item.setItemMeta(meta);
         this.enchants = enchants;
     }
 
